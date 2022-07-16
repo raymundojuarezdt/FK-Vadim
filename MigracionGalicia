@@ -1,0 +1,258 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jul 12 2022
+
+@author: RAYMUNDO JUÁREZ
+"""
+
+# PROGRAMA REALIZADO POR RAYMUNDO JUÁREZ PARA TESIS DE ALEJANDRO FONSECA JULIO-2022
+#FILTRO DE KALMAN-VADIM APLICADO A SERIES DE TIEMPO MULTIVARIADO
+#MODELOS DE MIGRACIÓN PARA PROVINCIAS EN ESPAÑA: GALICIA
+#COMPARACIÓN CON FILTRO DE KALMAN CLÁSICO
+# EL MODELO FUE OBTENIDO USANDO EVIEWS 12
+#LA BD UTILIZADA FUE UN SCV BaseC3
+
+import numpy as np
+from numpy.linalg import inv
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.linalg as la
+
+#DECLARACIÓN DE VARIABLES DEL MODELO EN EVIEWS
+
+c1=0.001387
+c2=-19.97952
+c3=0.999076
+
+
+
+#VARIABLES DEPENDIENTES:
+#TASA BRUTA DE MIGRACIÓN
+#
+#VARIABLES INDEPENDIENTES
+#SALARIOESPERADO
+#
+
+
+
+# ESTAS LÍNEAS DE CÓDIGO SON PARA LLAMAR AL ARCHIVO EN EXCEL-SCV QUE CONTIENE
+# LAS SERIES DE TIEMPO QUE VAMOS A ANALIZAR
+
+y = pd.read_csv('C:/HPRAY2021/Investigacion2022/CarmenTesis/AlexFonseca/MIGRACION/BaseC3Galicia.csv', delimiter=',', parse_dates=["Periodo"])
+yt1 =[x for x in y.TasaBrutaMigracion]
+yt1 = np.array(yt1)
+Y=np.array([yt1[0]])
+dat=[x for x in y.Periodo]
+dat= np.array(dat)
+
+
+# ESTAS LÍNEAS DE CÓDIGO SON PARA LLAMAR AL ARCHIVO EN EXCEL-SCV QUE CONTIENE
+# LAS SERIES DE TIEMPO DEL MODELO ECONOMÉTRICO REALIZADO EN EVIEWS Y SE USARÁ
+# PARA GENERAR LOS DATOS DEL VECTOR ACTUAL
+
+w = pd.read_csv('C:/HPRAY2021/Investigacion2022/CarmenTesis/AlexFonseca/MIGRACION/BaseC3Galicia.csv', delimiter=',', parse_dates=["Periodo"])
+w1 =[x for x in w.pib_r_s_m]
+w1 = np.array(w1)
+
+
+#NÚMERO DE ESTADOS: ALPHA O SVi
+nalfa=1
+#NÚMERO DE SEÑALES O VARIABLES
+nsign=1
+#DIMENSION DE OBSERVACIONES
+nobs=dat.shape[0]
+#NÚMERO DE VARIABLES DEPENDIENTES
+ny=1
+
+# RUIDO PARA OBSERVACIONES
+mu1, sigma1 = 0, 5E-5
+aweibul=0.5
+Ruiy = np.random.normal(mu1, sigma1, [ny,nobs])
+Ruichi = np.zeros([nsign,nobs])
+#Ruiy = np.random.weibull(aweibul, [ny,nobs]) 
+#Ruichi = np.random.weibull(aweibul, [nsign,nobs]) 
+
+# create an observation vector of noisy GPS signals
+observationsyt = np.array([yt1]).T+Ruiy.T
+# create an observation vector of noisy GPS signals
+observationschi = np.array([w1]).T+Ruichi.T
+
+# DECLARACIÓN DE VARIABLES, INICIALIZACIÓN, ASIGNACIÓN DE VALORES
+
+# DECLARACIÓN DE VALORES INICIALES DE VARIABLES CHI, ALFA Y yt
+chi=np.array([w1[0]])
+alfa=np.array([0])
+yt=np.array([yt1[0]])
+alfa_init = np.array(alfa)
+chi_init = np.array(chi)
+yt_init = np.array(yt)
+
+# Matrix definitions
+Tt = np.array([[c3]])
+Zt= np.array([[1]])
+Xt= np.array([[c1]])
+Ht = np.array([[0]])
+#Qt = np.array([[2*c2**2]])
+Qt = np.array([[0.1]])
+P_init = 1E-3 * np.eye(len(chi_init))  # small initial prediction error
+
+# matrix dimensions
+nq = Qt.shape[0]
+nchi = nsign
+
+
+# allocate result matrices
+x_pred = np.zeros((nobs, nalfa))      # prediction of state vector
+xpredmax = np.zeros((nobs, nalfa))      # prediction of state vector
+P_pred = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+Ppredmax = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+x_est = np.zeros((nobs, nalfa))       # estimation of state vector
+xestmax = np.zeros((nobs, nalfa))       # estimation of state vector
+P_est = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pestmax = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pmax = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+K = np.zeros((nobs, nq, ny))       # Kalman Gain
+Kmax = np.zeros((nobs, nq, ny))       # Kalman Gain
+x_real = np.zeros((nobs, nalfa))      # prediction of state vector
+yt_real = np.zeros((nobs, ny))       # estimation of state vector
+yt_estV = np.zeros((nobs, ny))       # estimation of state vector
+yt_estK = np.zeros((nobs, ny))       # estimation of state vector
+chi = np.zeros((nobs, nchi)) 
+alfa = np.zeros((nobs, nalfa)) 
+yt = np.zeros((nobs, ny))       # estimation of state vector
+
+# set initial prediction
+x_pred[0] = alfa_init
+xpredmax[0] = alfa_init
+P_pred[0] = P_init
+Ppredmax[0] = P_init
+x_est[0] = alfa_init
+P_est[0] = P_init
+xestmax[0] = alfa_init
+Pestmax[0] = P_init
+#x_real[0]=alfa_init
+#alfa[0]=alfa_init
+chi[0]=chi_init
+yt_real[0] = yt_init
+yt_estV[0] = yt_init
+yt_estK[0] = yt_init
+yt[0] = yt_init
+B=0
+jmax=0
+
+
+
+# for each time-step...
+for i in range(nobs):
+
+# REAL STAGE
+    if i > 0:
+#        alfa[i]=np.array([sv1[i]])
+#        chi[i]=np.array([w1[i]])
+#        yt[i]=np.array([yt1[i]])
+#        x_real[i] = Tt @ alfa[i-1]#+ Ruido
+#        yt_real[i] = Zt @ alfa[i-1] + Xt @ observationschi[i-1]
+        x_pred[i] = Tt @ x_est[i-1]
+        P_pred[i] = Tt @ P_est[i-1] @ Tt.T + Qt
+        yt_estK[i]= Zt @ x_est[i-1] + Xt @ observationschi[i-1]
+
+# ESTIMATION STAGE
+    if i < 39:
+        K[i] = P_pred[i] @ Zt.T @ inv((Zt @ P_pred[i] @ Zt.T)+ Ht)
+        x_est[i] = x_pred[i] + K[i] @ (observationsyt[i] - Zt @ x_pred[i] - Xt @ observationschi[i])
+        P_est[i] = P_pred[i] - K[i] @ ((Zt @ P_pred[i] @ Zt.T) + Ht) @ K[i].T
+        #P_est[i] = P_pred[i] - K[i]  @ Zt @ P_pred[i]
+        EigP=la.eig(P_est[i])
+        sumEigP=np.sum(EigP[0])
+
+    if i > 38:
+        K[i] = P_pred[i] @ Zt.T @ inv((Zt @ P_pred[i] @ Zt.T)+ Ht)
+        x_est[i] = x_pred[i] + K[i] @ (yt_estK[i] - Zt @ x_pred[i] - Xt @ observationschi[i])
+        P_est[i] = P_pred[i] - K[i] @ ((Zt @ P_pred[i] @ Zt.T) + Ht) @ K[i].T
+        #P_est[i] = P_pred[i] - K[i]  @ Zt @ P_pred[i]
+        EigP=la.eig(P_est[i])
+        sumEigP=np.sum(EigP[0])
+    
+# KALMAN-VADIM GAIN MATRIX  STAGE  
+    if sumEigP>B:
+        B=sumEigP
+        jmax=jmax+1
+        kmax=i
+        Pmax[jmax+1]=P_est[i]
+
+for i in range(nobs):
+    
+    # prediction stage
+    if i > 0:
+        #chi[i]=np.array([w1[i],w2[i],w3[i],w4[i],w5[i],w6[i]])
+        xpredmax[i] = Tt @ xestmax[i-1]
+        Ppredmax[i] = Tt @ Pestmax[i-1] @ Tt.T + Qt
+        yt_estV[i]= Zt @ xestmax[i-1] + Xt @ observationschi[i-1]
+    
+    # estimation stage
+    if i < 39:
+        Kmax[i] = Ppredmax[i] @ Zt.T @ inv((Zt @ Ppredmax[i] @ Zt.T) + Ht)
+        xestmax[i] = xpredmax[i] + Kmax[i]  @ (observationsyt[i] - Zt @ xpredmax[i] - Xt @ observationschi[i])
+        Pestmax[i] = Pmax[jmax+1]    
+
+    if i > 38:
+        Kmax[i] = Ppredmax[i] @ Zt.T @ inv((Zt @ Ppredmax[i] @ Zt.T) + Ht)
+        xestmax[i] = xpredmax[i] + Kmax[i]  @ (yt_estV[i] - Zt @ xpredmax[i] - Xt @ observationschi[i])
+        Pestmax[i] = Pmax[jmax+1]    
+
+#CALCULO DEL ERROR MEDIO CUADRÁTICO PARA LAS SERIES
+
+diferenciaK = np.subtract(observationsyt,yt_estK)
+squaredK = np.square(diferenciaK)
+mseK = squaredK.mean()
+print(mseK)
+
+#CALCULO DEL ERROR MEDIO CUADRÁTICO PARA LAS SERIES
+
+diferenciaV = np.subtract(observationsyt,yt_estV)
+squaredV = np.square(diferenciaV)
+mseV = squaredV.mean()
+print(mseV)
+
+#EXPORTAR ARREGLOS PARA ARCHIVO SCV
+obsyt=np.array(observationsyt)
+ytK=np.array(yt_estK)
+ytV=np.array(yt_estV)
+Galicia=np.concatenate((obsyt,ytK,ytV),axis=1)
+dfGalicia=pd.DataFrame(Galicia,columns=['MigracionRuido','MigracionK12','MigracionV12'])
+dfGalicia.to_csv('GaliciaR12.csv')
+                
+
+
+# ESTAS LÍNEAS SON DEL FK APLICADO A UNA SERIE DE TIEMPO
+
+plt.figure(figsize=(12,10))
+
+
+with pd.plotting.plot_params.use("x_compat", True):
+    plt.scatter(dat, observationsyt[:,0], color="g", label='Obs of the TasaBrutoMigracion')
+    #plt.plot(dat, yt_estK[:,0], linestyle="-", color="r", label='FK')
+    plt.plot(dat, yt_estV[:,0], linestyle="-", color="k", label='FK-Vadim')
+    plt.scatter(dat, yt1, linestyle="-", color="b", label='Real')
+
+
+plt.xlabel('Time')
+plt.ylabel('Tasa Bruta Migración')
+plt.title('Tasa Bruta de Migración prediction for GALICIA')
+plt.legend(loc=0)
+
+plt.show()
+
+with pd.plotting.plot_params.use("x_compat", True):
+    plt.scatter(dat, observationsyt[:,0], color="g", label='Obs of the TasaBrutoMigracion')
+    plt.plot(dat, yt_estK[:,0], linestyle="-", color="r", label='FK')
+    plt.plot(dat, yt_estV[:,0], linestyle="-", color="k", label='FK-Vadim')
+    plt.scatter(dat, yt1, linestyle="-", color="b", label='Real')
+
+
+plt.xlabel('Time')
+plt.ylabel('Tasa Bruta Migración')
+plt.title('Tasa Bruta de Migración prediction for GALICIA')
+plt.legend(loc=0)
+
+plt.show()
