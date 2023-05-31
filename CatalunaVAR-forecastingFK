@@ -1,0 +1,1170 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri February 20 2023
+
+@author: RAYMUNDO JUÁREZ
+"""
+
+# PROGRAMA REALIZADO POR RAYMUNDO JUÁREZ PARA ARTÍCULO CON ALEJANDRO FONSECA
+#FILTRO DE KALMAN-VADIM APLICADO A SERIES DE TIEMPO MULTIVARIADO
+#CON MODELO VAR
+#MODELOS DE MIGRACIÓN PARA PROVINCIAS EN ESPAÑA: GALICIA
+#COMPARACIÓN CON FILTRO DE KALMAN CLÁSICO
+# EL MODELO FUE OBTENIDO USANDO EVIEWS 12
+#
+#RUIDO GAUSSIANO:
+#EL COMPORTAMIENTO DE AMBOS FILTROS DEBE SER MUY SIMILAR
+
+#RUIDO WEIBULL CON OUTLAYERS
+#EL COMPORTAMIENTO DEL FK-VADIM DEBE
+#ALCANZAR MEJOR LOS OUTLAYERS
+#ACERCARSE MÁS A LAS OBSERVACIONES EN PUNTOS VERDES
+
+
+#LOS VALORES CRÍTICOS QUE DEBES TENER EN CUENTA SON:
+
+#CONDICIONES INCIALES DE XT Y YT: PRUEBA PRIMERO CAMBIAR LAS CONDICIONES DE YT
+#LAS C.I. DEBEN AGRUPARSE: MODELO REAL (IDEAL) (100,0) Y OBSERVACIONES (RUIDO) (NA PARA i=0),
+# Y ESTIMADOS  (95,1)
+
+#LAS C.I. DEBE SER DIFERENTES PARA AMBOS GRUPOS, ESTO ES UN PUNTO IMPORTANTE
+
+#VALORES PEQUEÑOS PARA QT Y HT
+#ESTOS VALORES SON CONOCIDOS PARA EL CASO DE RUIDO GAUSSIANO
+#ESTOS VALORES SON DESCONOCIDOS PARA OUTLAYERS 
+#SUGERENCIA: DEJARLOS CON VALORES PEQUEÑOS
+
+#VALOR DE P_EST
+#ESTE VALOR DEBE SER PEQUEÑO O IGUAL AL VALOR DE QT CONOCIDO, PARA EL CASO 
+#GAUSSIANO
+
+#ESTE VALOR DEBE SER GRANDE PARA EL CASO DE RUIDO CON OUTLAYERS
+#ESTE VALOR ES MUY IMPORTANTE PARA EL FUNCIONAMIENTO DEL FK-VADIM
+#UN VALOR IADECUADO DE P_EST PROVOCA QUE FK-VADIM NO FUNCIONE
+
+
+####################################################################################
+####################################################################################
+####################################################################################
+
+#LIBRERIAS REQUERIDAS
+
+import numpy as np
+from numpy.linalg import inv
+import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.linalg as la
+
+######################################################################################################
+######################################################################################################
+
+#VARIABLES DEPENDIENTES E INDEPENDIENTES EXTRAIDAS DE LA BASE DE DATOS:
+#TASA BRUTA DE MIGRACIÓN
+#PIB RS
+
+# ESTAS LÍNEAS DE CÓDIGO SON PARA LLAMAR AL ARCHIVO EN EXCEL-SCV QUE CONTIENE
+# LAS SERIES DE TIEMPO DEL MODELO ECONOMÉTRICO REALIZADO EN EVIEWS Y SE USARÁ
+# PARA GENERAR LOS DATOS DEL VECTOR ACTUAL
+
+x = pd.read_csv('D:/RESPALDO2023ABRIL/Investigacion2022/CarmenTesis/AlexFonseca/MIGRACION/BaseC3Cataluna.csv', delimiter=',', parse_dates=["Periodo"])
+x1 =[k for k in x.TasaBrutaMigracion]
+x1 = np.array(x1)
+x2 =[k for k in x.salarioesperado_m]
+x2 = np.array(x2)
+x3 =[k for k in x.pib_per_m]
+x3 = np.array(x3)
+dat=[k for k in x.Periodo]
+dat= np.array(dat)
+
+
+######################################################################################
+######################################################################################
+######################################################################################
+
+#IDENTIFICACIÓN DE DIMENSIONES DE LAS VARIABLES
+
+#NÚMERO DE ESTADOS: ALPHA O SVi
+nx=3
+#DIMENSION DE OBSERVACIONES
+nobs=dat.shape[0]
+#NÚMERO DE VARIABLES DEPENDIENTES
+ny=1
+
+
+#####################################################################################
+#####################################################################################
+#####################################################################################
+
+#DECLARACIÓN DE VARIABLES DEL MODELO EN EVIEWS
+
+
+c11=1.013689
+c12=-1.35e-5
+c13=0.000759
+c21=62.64314
+c22=0.961373
+c23=-0.129874
+c31=-16.38511
+c32=0.010069
+c33=0.914250
+
+# DECLARACIÓN DE VALORES CONSTANTES
+
+Tt = np.array([[c11,c12,c13],
+               [c21,c22,c23],
+               [c31,c32,c33]])
+Zt= np.array([[1,0,0]])
+
+
+# CONDICIONES INICIALES
+#CI
+
+
+#Ht = np.array(cov2)
+Ht = 1E-6*np.array([0])
+Qt = 1E-6*np.eye(nx)
+#Qt = np.array(cov1)
+P_init = 1E6*np.eye(len(Qt))  # small initial prediction error
+# matrix dimensions
+nq = Qt.shape[0]
+
+
+CIx=np.array([0,0,0])
+CIx1=np.array([x1[0],x2[0],x3[0]])
+
+yt=np.array([0])
+yti1=np.array([x1[0]])
+
+x_init = np.array(CIx)
+x_init1 = np.array(CIx1)
+
+yt_init = np.array(yt)
+yt_init1 = np.array(yti1)
+
+#DECLARACIÓN DE CONTADORES PARA EXTENSIÓN CONVEXA DE FILTRO DE KALMAN (VADIM)
+B=0
+jmax=0
+kmax=0
+B1=0
+jmax1=0
+kmax1=0
+
+
+##################################################################################
+##################################################################################
+##################################################################################
+
+# DECLARACIÓN DE VARIABLES PARA ALGORITMO DE FK
+# VARIABLES PARA FILTRO DE KALMAN
+x_pred = np.zeros((nobs, nx))      # prediction of state vector
+xpredmax = np.zeros((nobs, nx))      # prediction of state vector
+P_pred = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+Ppredmax = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+x_est = np.zeros((nobs, nx))       # estimation of state vector
+xestmax = np.zeros((nobs, nx))       # estimation of state vector
+P_est = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pestmax = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pmax = np.zeros((nq, nq))   # estimation error covariance matrix
+K = np.zeros((nobs, nq, ny))       # Kalman Gain
+Kmax = np.zeros((nobs, nq, ny))       # Kalman Gain
+#VARIABLES PARA EXTENSIÓN DE FILTRO DE KALMAN (VADIM)
+x_pred1 = np.zeros((nobs, nx))      # prediction of state vector
+xpredmax1 = np.zeros((nobs, nx))      # prediction of state vector
+P_pred1 = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+Ppredmax1 = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+x_est1 = np.zeros((nobs, nx))       # estimation of state vector
+xestmax1 = np.zeros((nobs, nx))       # estimation of state vector
+P_est1 = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pestmax1 = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pmax1 = np.zeros((nq, nq))   # estimation error covariance matrix
+K1 = np.zeros((nobs, nq, ny))       # Kalman Gain
+Kmax1 = np.zeros((nobs, nq, ny))       # Kalman Gain
+#VARIABLES PARA MODELO VAR
+x_real = np.zeros((nobs, nx))      # prediction of state vector
+x_real1 = np.zeros((nobs, nx))      # prediction of state vector
+x_real2 = np.zeros((nobs, nx))      # prediction of state vector
+yt_real = np.zeros((nobs, ny))       # estimation of state vector
+yt_real1 = np.zeros((nobs, ny))       # estimation of state vector
+yt_real2 = np.zeros((nobs, ny))       # estimation of state vector
+yt_predV = np.zeros((nobs, ny))       # estimation of state vector
+yt_predK = np.zeros((nobs, ny))       # estimation of state vector
+yt_predV1 = np.zeros((nobs, ny))       # estimation of state vector
+yt_predK1 = np.zeros((nobs, ny))       # estimation of state vector
+
+xinit = np.zeros((nobs, nx)) 
+yt = np.zeros((nobs, ny))       # estimation of state vector
+
+####################################################################################
+####################################################################################
+####################################################################################
+
+# CONDICIONES INICIALES PARA LAS VARIABLES DEL ALGORITMO DE FK
+#FILTRO DE KALMAN CLÁSICO
+
+x_pred[0] = x_init
+xpredmax[0] = x_init
+P_pred[0] = P_init
+Ppredmax[0] = P_init
+x_est[0] = x_init
+P_est[0] = P_init
+xestmax[0] = x_init
+Pestmax[0] = P_init
+Pmax = P_init
+#EXTENSIÓN CONVEXA DEL FILTRO DE KALMAN (VADIM)
+x_pred1[0] = x_init
+xpredmax1[0] = x_init
+P_pred1[0] = P_init
+Ppredmax1[0] = P_init
+x_est1[0] = x_init
+P_est1[0] = P_init
+xestmax1[0] = x_init
+Pestmax1[0] = P_init
+Pmax1 = P_init
+#MODELO DEL VAR
+x_real[0]=x_init1
+x_real1[0]=x_init1
+x_real2[0]=x_init1
+
+yt_real[0] = yt_init1
+yt_real1[0] = yt_init1
+yt_real2[0] = yt_init1
+yt_predV[0] = yt_init
+yt_predK[0] = yt_init
+yt_predV1[0] = yt_init
+yt_predK1[0] = yt_init
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+# GENERACIÓN DE RUIDO PARA OBSERVACIONES
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+
+#CASO SIN RUIDO EN LAS VARIABLES
+Ruix = np.zeros([nobs,nx])
+
+#GENERACIÓN DE RUIDO EN LA VARIABLE DE SALIDA
+#CASO EXTRAIDO DEL RUIDO ALFA
+Ruiy = np.array(Ruix[:,0])
+#CASO DE RUIDO ADICIONAL AL RUIDO ALFA
+#mean2 = [0]
+#cov2 = [[0.020]]  # diagonal covariance
+#Ruiy = np.random.multivariate_normal(mean2, cov2, nobs).T
+#Ruiy = np.zeros([nobs,ny])
+#yweibul=0.3
+#Ruialfa = np.random.weibull(yweibul, [nobs,ny]) 
+
+#CREACIÓN DEL VECTOR DE OBSERVACIONES EN LAS VARIABLES
+observationsx = np.array([x1,x2,x3]).T+Ruix
+print(observationsx[0])
+#CREACIÓN DEL VECTOR DE OBSERVACIONES EN LA SALIDA
+observationsyt = np.array([observationsx[:,0]]).T
+
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+
+#ALGORITMO DE FILTRO DE KALMAN
+
+# MAIN CYCLE FOR KALMAN FILTER
+for i in range(nobs):
+# REAL STAGE
+    if i > 0:
+        #x_real1[i] = Tt @ x_real1[i-1]#+Ruix[i-1]
+        x_real1[i] = Tt @ observationsx[i-1]#+Ruix[i-1]
+        yt_real1[i] = Zt @ x_real1[i]#+Ruiy[i]
+        
+        if i > nobs-12:
+            x_real[i] = Tt @ x_pred1[i-1]#+Ruix[i-1]
+            yt_real[i] = Zt @ x_real[i]#+Ruiy[i]
+        else:
+            x_real[i] = Tt @ observationsx[i-1]#+Ruichi[i-1]
+            yt_real[i] = Zt @ x_real[i]#+Ruiy[i]
+        
+        x_pred1[i] = Tt @ x_est1[i-1]
+        P_pred1[i] = Tt @ P_est1[i-1] @ Tt.T + Qt
+        yt_predK1[i]= Zt @ x_pred1[i]
+
+# ESTIMATION STAGE
+    K1[i] = P_pred1[i] @ Zt.T @ inv((Zt @ P_pred1[i] @ Zt.T)+ Ht)
+
+    if i > nobs-12:
+        x_est1[i] = x_pred1[i] + K1[i] @ (yt_real[i] - yt_predK1[i])
+    else:
+        x_est1[i] = x_pred1[i] + K1[i] @ (observationsyt[i] - yt_predK1[i])
+    P_est1[i] = P_pred1[i] - K1[i] @ ((Zt @ P_pred1[i] @ Zt.T) + Ht) @ K1[i].T
+    #P_est1[i] = P_pred1[i] - K1[i]  @ Zt @ P_pred1[i]
+    
+# KALMAN-VADIM GAIN MATRIX  STAGE 
+    EigP1=la.eig(P_est1[i])
+    sumEigP1=np.sum(EigP1[0])
+    if sumEigP1>B1:
+        B1=sumEigP1
+        jmax1 +=1
+        kmax1=i
+        Pmax1=P_est1[i]
+    if i==0:
+        B1=sumEigP1
+        Pmax1=P_init
+
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+
+
+#ALGORITMO DE EXTENSIÓN DE FILTRO DE KALMAN (VADIM)
+#MAIN CYCLE FOR KALMAN FILTER EXTENSION BY VADIM AZHMYAKOV
+for i in range(nobs):
+    # prediction stage
+    if i > 0:
+        if i > nobs-12:
+            x_real2[i] = Tt @ xpredmax1[i-1]#+Ruix[i-1]
+            yt_real2[i] = Zt @ x_real2[i]#+Ruiy[i]
+        else:
+            x_real2[i] = Tt @ observationsx[i-1]#+Ruichi[i-1]
+            yt_real2[i] = Zt @ x_real2[i]#+Ruiy[i]
+        
+        xpredmax1[i] = Tt @ xestmax1[i-1]
+        Ppredmax1[i] = Tt @ Pestmax1[i-1] @ Tt.T + Qt
+        yt_predV1[i]= Zt @ xpredmax1[i]
+      
+    # estimation stage
+    Kmax1[i] = Ppredmax1[i] @ Zt.T @ inv((Zt @ Ppredmax1[i] @ Zt.T) + Ht)
+
+    if i > nobs-12:
+        xestmax1[i] = xpredmax1[i] + Kmax1[i]  @ (yt_real2[i] - yt_predV1[i])
+    else:
+        xestmax1[i] = xpredmax1[i] + Kmax1[i]  @ (observationsyt[i] - yt_predV1[i])
+    Pestmax1[i] = Pmax1
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+#CALCULO DE ERRORES
+
+#CALCULO DEL ERROR MEDIO CUADRÁTICO PARA LAS SERIES: FK CLÁSICO
+diferenciaK1 = np.subtract(observationsyt,yt_predK1)
+squaredK1 = np.square(diferenciaK1)
+mseK1 = squaredK1.mean()
+print(mseK1)
+
+#CALCULO DEL ERROR MEDIO CUADRÁTICO PARA LAS SERIES: FK-VADIM
+diferenciaV1 = np.subtract(observationsyt,yt_predV1)
+squaredV1 = np.square(diferenciaV1)
+mseV1 = squaredV1.mean()
+print(mseV1)
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+
+
+#EXPORTAR ARREGLOS PARA ARCHIVO SCV
+Obs=np.array(observationsyt)
+yreal=np.array(yt_real1)
+ytK=np.array(yt_predK1)
+ytV=np.array(yt_predV1)
+mseV=np.array(squaredV1)
+mseK=np.array(squaredK1)
+Cataluna=np.concatenate((ytK,mseK,ytV,mseV,yreal,Obs),axis=1)
+dfCataluna=pd.DataFrame(Cataluna,columns=['MigracionK-12','MseK','MigracionV-12','MseV','VAR','Obs'])
+dfCataluna.to_csv('CatalunaVAR-FK12-Zero.csv')
+       
+
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+
+# GRAFICA DE VARIABLES DE SALIDA
+
+
+obsyt=np.append([[0]],observationsyt,axis=0)
+
+plt.figure(figsize=(16,10))
+
+with pd.plotting.plot_params.use("x_compat", True):
+    #plt.scatter(dat, yt_real1[:], color="g", label='Calculated Obs')
+    plt.plot(dat, yt_predK1[:], linestyle="-", color="r", label='FK')
+    plt.plot(dat, yt_predV1[:], linestyle="-", color="k", label='FK-Vadim')
+    plt.plot(dat, yt_real1[:], linestyle="-", color="g", label='VAR')
+    #plt.plot(dat, yt_real[:], linestyle="-", color="b", label='VARKALMAN')
+    #plt.plot(dat, yt_real2[:], linestyle="-", color="m", label='VARVADIM')
+    plt.scatter(dat, obsyt[0:-1], linestyle="-", color="y", label='Original Data')
+
+#plt.ylim([-0.0025,0.0025])
+plt.xlabel('Time')
+plt.ylabel('Tasa Bruta Migración')
+plt.title('Migration Rate prediction for CATALUNA')
+plt.legend(loc=0)
+
+plt.show()
+
+# GRAFICA DE VARIABLES DE SALIDA CON ZOOM
+
+
+plt.figure(figsize=(16,10))
+
+with pd.plotting.plot_params.use("x_compat", True):
+    #plt.scatter(dat, yt_real1[:], color="g", label='Calculated Obs')
+    plt.plot(dat, yt_predK1[:], linestyle="-", color="r", label='FK')
+    plt.plot(dat, yt_predV1[:], linestyle="-", color="k", label='FK-Vadim')
+    plt.plot(dat, yt_real1[:], linestyle="-", color="g", label='VAR')
+    #plt.plot(dat, yt_real[:], linestyle="-", color="b", label='VARKALMAN')
+    #plt.plot(dat, yt_real2[:], linestyle="-", color="m", label='VARVADIM')
+    plt.scatter(dat, obsyt[0:-1], linestyle="-", color="y", label='Original Data')
+
+plt.ylim([0.0004,0.0015])
+plt.xlabel('Time')
+plt.ylabel('Tasa Bruta Migración')
+plt.title('Migration Rate prediction for CATALUNA (ZOOM)')
+plt.legend(loc=0)
+
+plt.show()
+
+
+# GRÁFICA DE ERRORES MEDIOS CUADRÁTICOS DE CADA ALGORITMO
+
+plt.figure(figsize=(16,10))
+
+with pd.plotting.plot_params.use("x_compat", True):
+    plt.plot(dat, squaredK1[:], linestyle="-", color="r", label='FK')
+    plt.plot(dat, squaredV1[:], linestyle="-", color="k", label='FK-V')
+
+plt.xlabel('Time')
+plt.ylabel('MSE with classic KF')
+plt.title('Mean Square Error for Migration Rate Prediction for CATALUNA')
+plt.legend(loc=0)
+
+plt.show()
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+# GENERACIÓN DE RUIDO PARA OBSERVACIONES: GAUSSIANAS
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+######################################################################################
+######################################################################################
+#######################################################################################
+######################################################################################
+######################################################################################
+#######################################################################################
+
+######################################################################################
+######################################################################################
+#######################################################################################
+######################################################################################
+######################################################################################
+#######################################################################################
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+
+# CONDICIONES INICIALES
+#CI
+
+
+#Ht = np.array(cov2)
+Ht = 1E-3*np.array([1])
+Qt = 1E-6*np.eye(nx)
+#Qt = np.array(cov1)
+P_init = 1E6*np.eye(len(Qt))  # small initial prediction error
+
+
+CIx=np.array([1,1,1])
+CIx1=np.array([x1[0],x2[0],x3[0]])
+
+yt=np.array([1])
+yti1=np.array([x1[0]])
+
+x_init = np.array(CIx)
+x_init1 = np.array(CIx1)
+
+yt_init = np.array(yt)
+yt_init1 = np.array(yti1)
+
+#DECLARACIÓN DE CONTADORES PARA EXTENSIÓN CONVEXA DE FILTRO DE KALMAN (VADIM)
+B=0
+jmax=0
+kmax=0
+B1=0
+jmax1=0
+kmax1=0
+
+
+##################################################################################
+##################################################################################
+##################################################################################
+
+# DECLARACIÓN DE VARIABLES PARA ALGORITMO DE FK
+# VARIABLES PARA FILTRO DE KALMAN
+x_pred = np.zeros((nobs, nx))      # prediction of state vector
+xpredmax = np.zeros((nobs, nx))      # prediction of state vector
+P_pred = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+Ppredmax = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+x_est = np.zeros((nobs, nx))       # estimation of state vector
+xestmax = np.zeros((nobs, nx))       # estimation of state vector
+P_est = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pestmax = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pmax = np.zeros((nq, nq))   # estimation error covariance matrix
+K = np.zeros((nobs, nq, ny))       # Kalman Gain
+Kmax = np.zeros((nobs, nq, ny))       # Kalman Gain
+#VARIABLES PARA EXTENSIÓN DE FILTRO DE KALMAN (VADIM)
+x_pred1 = np.zeros((nobs, nx))      # prediction of state vector
+xpredmax1 = np.zeros((nobs, nx))      # prediction of state vector
+P_pred1 = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+Ppredmax1 = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+x_est1 = np.zeros((nobs, nx))       # estimation of state vector
+xestmax1 = np.zeros((nobs, nx))       # estimation of state vector
+P_est1 = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pestmax1 = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pmax1 = np.zeros((nq, nq))   # estimation error covariance matrix
+K1 = np.zeros((nobs, nq, ny))       # Kalman Gain
+Kmax1 = np.zeros((nobs, nq, ny))       # Kalman Gain
+#VARIABLES PARA MODELO VAR
+x_real = np.zeros((nobs, nx))      # prediction of state vector
+x_real1 = np.zeros((nobs, nx))      # prediction of state vector
+x_real2 = np.zeros((nobs, nx))      # prediction of state vector
+yt_real = np.zeros((nobs, ny))       # estimation of state vector
+yt_real1 = np.zeros((nobs, ny))       # estimation of state vector
+yt_real2 = np.zeros((nobs, ny))       # estimation of state vector
+yt_predV = np.zeros((nobs, ny))       # estimation of state vector
+yt_predK = np.zeros((nobs, ny))       # estimation of state vector
+yt_predV1 = np.zeros((nobs, ny))       # estimation of state vector
+yt_predK1 = np.zeros((nobs, ny))       # estimation of state vector
+
+xinit = np.zeros((nobs, nx)) 
+yt = np.zeros((nobs, ny))       # estimation of state vector
+
+####################################################################################
+####################################################################################
+####################################################################################
+
+# CONDICIONES INICIALES PARA LAS VARIABLES DEL ALGORITMO DE FK
+#FILTRO DE KALMAN CLÁSICO
+
+x_pred[0] = x_init
+xpredmax[0] = x_init
+P_pred[0] = P_init
+Ppredmax[0] = P_init
+x_est[0] = x_init
+P_est[0] = P_init
+xestmax[0] = x_init
+Pestmax[0] = P_init
+Pmax = P_init
+#EXTENSIÓN CONVEXA DEL FILTRO DE KALMAN (VADIM)
+x_pred1[0] = x_init
+xpredmax1[0] = x_init
+P_pred1[0] = P_init
+Ppredmax1[0] = P_init
+x_est1[0] = x_init
+P_est1[0] = P_init
+xestmax1[0] = x_init
+Pestmax1[0] = P_init
+Pmax1 = P_init
+#MODELO DEL VAR
+x_real[0]=x_init1
+x_real1[0]=x_init1
+x_real2[0]=x_init1
+
+yt_real[0] = yt_init1
+yt_real1[0] = yt_init1
+yt_real2[0] = yt_init1
+yt_predV[0] = yt_init
+yt_predK[0] = yt_init
+yt_predV1[0] = yt_init
+yt_predK1[0] = yt_init
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+
+#CASO CON RUIDO GAUSSIANO
+mean1 = [0,0,0]
+cov1 = [[0.02, 0,0], [0,0.01,0], [0,0,0.04]]  # diagonal covariance
+Rx1, Rx2, Rx3 = np.random.multivariate_normal(mean1, cov1, nobs).T
+Ruix = np.array([Rx1,Rx2,Rx3]).T
+
+#GENERACIÓN DE RUIDO EN LA VARIABLE DE SALIDA
+#CASO EXTRAIDO DEL RUIDO ALFA
+Ruiy = np.array(Ruix[:,0])
+#CASO DE RUIDO ADICIONAL AL RUIDO ALFA
+#mean2 = [0]
+#cov2 = [[0.020]]  # diagonal covariance
+#Ruiy = np.random.multivariate_normal(mean2, cov2, nobs).T
+#Ruiy = np.zeros([nobs,ny])
+#yweibul=0.3
+#Ruialfa = np.random.weibull(yweibul, [nobs,ny]) 
+
+#CREACIÓN DEL VECTOR DE OBSERVACIONES EN LAS VARIABLES
+observationsx = np.array([x1,x2,x3]).T+Ruix
+print(observationsx[0])
+#CREACIÓN DEL VECTOR DE OBSERVACIONES EN LA SALIDA
+observationsyt = np.array([observationsx[:,0]]).T
+
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+
+#ALGORITMO DE FILTRO DE KALMAN
+
+# MAIN CYCLE FOR KALMAN FILTER
+for i in range(nobs):
+# REAL STAGE
+    if i > 0:
+        #x_real1[i] = Tt @ x_real1[i-1]#+Ruix[i-1]
+        x_real1[i] = Tt @ observationsx[i-1]#+Ruix[i-1]
+        yt_real1[i] = Zt @ x_real1[i]#+Ruiy[i]
+        
+        if i > nobs-12:
+            x_real[i] = Tt @ x_pred1[i-1]#+Ruix[i-1]
+            yt_real[i] = Zt @ x_real[i]#+Ruiy[i]
+        else:
+            x_real[i] = Tt @ observationsx[i-1]#+Ruichi[i-1]
+            yt_real[i] = Zt @ x_real[i]#+Ruiy[i]
+        
+        x_pred1[i] = Tt @ x_est1[i-1]
+        P_pred1[i] = Tt @ P_est1[i-1] @ Tt.T + Qt
+        yt_predK1[i]= Zt @ x_pred1[i]
+
+# ESTIMATION STAGE
+    K1[i] = P_pred1[i] @ Zt.T @ inv((Zt @ P_pred1[i] @ Zt.T)+ Ht)
+
+    if i > nobs-12:
+        x_est1[i] = x_pred1[i] + K1[i] @ (yt_real[i] - yt_predK1[i])
+    else:
+        x_est1[i] = x_pred1[i] + K1[i] @ (observationsyt[i] - yt_predK1[i])
+    P_est1[i] = P_pred1[i] - K1[i] @ ((Zt @ P_pred1[i] @ Zt.T) + Ht) @ K1[i].T
+    #P_est1[i] = P_pred1[i] - K1[i]  @ Zt @ P_pred1[i]
+    
+# KALMAN-VADIM GAIN MATRIX  STAGE 
+    EigP1=la.eig(P_est1[i])
+    sumEigP1=np.sum(EigP1[0])
+    if sumEigP1>B1:
+        B1=sumEigP1
+        jmax1 +=1
+        kmax1=i
+        Pmax1=P_est1[i]
+    if i==0:
+        B1=sumEigP1
+        Pmax1=P_init
+
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+
+
+#ALGORITMO DE EXTENSIÓN DE FILTRO DE KALMAN (VADIM)
+#MAIN CYCLE FOR KALMAN FILTER EXTENSION BY VADIM AZHMYAKOV
+for i in range(nobs):
+    # prediction stage
+    if i > 0:
+        if i > nobs-12:
+            x_real2[i] = Tt @ xpredmax1[i-1]#+Ruix[i-1]
+            yt_real2[i] = Zt @ x_real2[i]#+Ruiy[i]
+        else:
+            x_real2[i] = Tt @ observationsx[i-1]#+Ruichi[i-1]
+            yt_real2[i] = Zt @ x_real2[i]#+Ruiy[i]
+        
+        xpredmax1[i] = Tt @ xestmax1[i-1]
+        Ppredmax1[i] = Tt @ Pestmax1[i-1] @ Tt.T + Qt
+        yt_predV1[i]= Zt @ xpredmax1[i]
+      
+    # estimation stage
+    Kmax1[i] = Ppredmax1[i] @ Zt.T @ inv((Zt @ Ppredmax1[i] @ Zt.T) + Ht)
+
+    if i > nobs-12:
+        xestmax1[i] = xpredmax1[i] + Kmax1[i]  @ (yt_real2[i] - yt_predV1[i])
+    else:
+        xestmax1[i] = xpredmax1[i] + Kmax1[i]  @ (observationsyt[i] - yt_predV1[i])
+    Pestmax1[i] = Pmax1
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+#CALCULO DE ERRORES
+
+#CALCULO DEL ERROR MEDIO CUADRÁTICO PARA LAS SERIES: FK CLÁSICO
+diferenciaK1 = np.subtract(observationsyt,yt_predK1)
+squaredK1 = np.square(diferenciaK1)
+mseK1 = squaredK1.mean()
+print(mseK1)
+
+#CALCULO DEL ERROR MEDIO CUADRÁTICO PARA LAS SERIES: FK-VADIM
+diferenciaV1 = np.subtract(observationsyt,yt_predV1)
+squaredV1 = np.square(diferenciaV1)
+mseV1 = squaredV1.mean()
+print(mseV1)
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+
+
+#EXPORTAR ARREGLOS PARA ARCHIVO SCV
+Obs=np.array(observationsyt)
+yreal=np.array(yt_real1)
+ytK=np.array(yt_predK1)
+ytV=np.array(yt_predV1)
+mseV=np.array(squaredV1)
+mseK=np.array(squaredK1)
+Cataluna1=np.concatenate((ytK,mseK,ytV,mseV,yreal,Obs),axis=1)
+dfCataluna1=pd.DataFrame(Cataluna1,columns=['MigracionK-12','MseK','MigracionV-12','MseV','VAR','Obs'])
+dfCataluna1.to_csv('CatalunaVAR-FK12-Gauss.csv')
+       
+
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+
+# GRAFICA DE VARIABLES DE SALIDA
+
+
+obsyt=np.append([[0]],observationsyt,axis=0)
+
+plt.figure(figsize=(16,10))
+
+with pd.plotting.plot_params.use("x_compat", True):
+    #plt.scatter(dat, yt_real1[:], color="g", label='Calculated Obs')
+    plt.plot(dat, yt_predK1[:], linestyle="-", color="r", label='FK')
+    plt.plot(dat, yt_predV1[:], linestyle="-", color="k", label='FK-Vadim')
+    plt.plot(dat, yt_real1[:], linestyle="-", color="g", label='VAR')
+    #plt.plot(dat, yt_real[:], linestyle="-", color="b", label='VARKALMAN')
+    #plt.plot(dat, yt_real2[:], linestyle="-", color="m", label='VARVADIM')
+    plt.scatter(dat, obsyt[0:-1], linestyle="-", color="y", label='Original Data')
+
+#plt.ylim([-0.0025,0.0025])
+plt.xlabel('Time')
+plt.ylabel('Tasa Bruta Migración')
+plt.title('Migration Rate prediction for CATALUNA')
+plt.legend(loc=0)
+
+plt.show()
+
+# GRAFICA DE VARIABLES DE SALIDA CON ZOOM
+
+
+plt.figure(figsize=(16,10))
+
+with pd.plotting.plot_params.use("x_compat", True):
+    #plt.scatter(dat, yt_real1[:], color="g", label='Calculated Obs')
+    plt.plot(dat, yt_predK1[:], linestyle="-", color="r", label='FK')
+    plt.plot(dat, yt_predV1[:], linestyle="-", color="k", label='FK-Vadim')
+    plt.plot(dat, yt_real1[:], linestyle="-", color="g", label='VAR')
+    #plt.plot(dat, yt_real[:], linestyle="-", color="b", label='VARKALMAN')
+    #plt.plot(dat, yt_real2[:], linestyle="-", color="m", label='VARVADIM')
+    plt.scatter(dat, obsyt[0:-1], linestyle="-", color="y", label='Original Data')
+
+plt.ylim([-0.4,0.4])
+plt.xlabel('Time')
+plt.ylabel('Tasa Bruta Migración')
+plt.title('Migration Rate prediction for CATALUNA (ZOOM)')
+plt.legend(loc=0)
+
+plt.show()
+
+
+# GRÁFICA DE ERRORES MEDIOS CUADRÁTICOS DE CADA ALGORITMO
+
+plt.figure(figsize=(16,10))
+
+with pd.plotting.plot_params.use("x_compat", True):
+    plt.plot(dat, squaredK1[:], linestyle="-", color="r", label='FK')
+    plt.plot(dat, squaredV1[:], linestyle="-", color="k", label='FK-V')
+
+plt.xlabel('Time')
+plt.ylabel('MSE with classic KF')
+plt.title('Mean Square Error for Migration Rate Prediction for CATALUNA')
+plt.legend(loc=0)
+
+plt.show()
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+# GENERACIÓN DE RUIDO PARA OBSERVACIONES: OUTLAYERS
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+######################################################################################
+######################################################################################
+#######################################################################################
+######################################################################################
+######################################################################################
+#######################################################################################
+
+######################################################################################
+######################################################################################
+#######################################################################################
+######################################################################################
+######################################################################################
+#######################################################################################
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+
+
+# CONDICIONES INICIALES
+#CI
+
+#Ht = np.array(cov2)
+Ht = 1E-3*np.array([1])
+Qt = 1E-6*np.eye(nx)
+#Qt = np.array(cov1)
+P_init = 1E6*np.eye(len(Qt))  # small initial prediction error
+
+
+CIx=np.array([100,1,1])
+CIx1=np.array([x1[0],x2[0],x3[0]])
+
+yt=np.array([100])
+yti1=np.array([x1[0]])
+
+x_init = np.array(CIx)
+x_init1 = np.array(CIx1)
+
+yt_init = np.array(yt)
+yt_init1 = np.array(yti1)
+
+#DECLARACIÓN DE CONTADORES PARA EXTENSIÓN CONVEXA DE FILTRO DE KALMAN (VADIM)
+B=0
+jmax=0
+kmax=0
+B1=0
+jmax1=0
+kmax1=0
+
+
+##################################################################################
+##################################################################################
+##################################################################################
+
+# DECLARACIÓN DE VARIABLES PARA ALGORITMO DE FK
+# VARIABLES PARA FILTRO DE KALMAN
+x_pred = np.zeros((nobs, nx))      # prediction of state vector
+xpredmax = np.zeros((nobs, nx))      # prediction of state vector
+P_pred = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+Ppredmax = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+x_est = np.zeros((nobs, nx))       # estimation of state vector
+xestmax = np.zeros((nobs, nx))       # estimation of state vector
+P_est = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pestmax = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pmax = np.zeros((nq, nq))   # estimation error covariance matrix
+K = np.zeros((nobs, nq, ny))       # Kalman Gain
+Kmax = np.zeros((nobs, nq, ny))       # Kalman Gain
+#VARIABLES PARA EXTENSIÓN DE FILTRO DE KALMAN (VADIM)
+x_pred1 = np.zeros((nobs, nx))      # prediction of state vector
+xpredmax1 = np.zeros((nobs, nx))      # prediction of state vector
+P_pred1 = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+Ppredmax1 = np.zeros((nobs, nq, nq))  # prediction error covariance matrix
+x_est1 = np.zeros((nobs, nx))       # estimation of state vector
+xestmax1 = np.zeros((nobs, nx))       # estimation of state vector
+P_est1 = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pestmax1 = np.zeros((nobs, nq, nq))   # estimation error covariance matrix
+Pmax1 = np.zeros((nq, nq))   # estimation error covariance matrix
+K1 = np.zeros((nobs, nq, ny))       # Kalman Gain
+Kmax1 = np.zeros((nobs, nq, ny))       # Kalman Gain
+#VARIABLES PARA MODELO VAR
+x_real = np.zeros((nobs, nx))      # prediction of state vector
+x_real1 = np.zeros((nobs, nx))      # prediction of state vector
+x_real2 = np.zeros((nobs, nx))      # prediction of state vector
+yt_real = np.zeros((nobs, ny))       # estimation of state vector
+yt_real1 = np.zeros((nobs, ny))       # estimation of state vector
+yt_real2 = np.zeros((nobs, ny))       # estimation of state vector
+yt_predV = np.zeros((nobs, ny))       # estimation of state vector
+yt_predK = np.zeros((nobs, ny))       # estimation of state vector
+yt_predV1 = np.zeros((nobs, ny))       # estimation of state vector
+yt_predK1 = np.zeros((nobs, ny))       # estimation of state vector
+
+xinit = np.zeros((nobs, nx)) 
+yt = np.zeros((nobs, ny))       # estimation of state vector
+
+####################################################################################
+####################################################################################
+####################################################################################
+
+# CONDICIONES INICIALES PARA LAS VARIABLES DEL ALGORITMO DE FK
+#FILTRO DE KALMAN CLÁSICO
+
+x_pred[0] = x_init
+xpredmax[0] = x_init
+P_pred[0] = P_init
+Ppredmax[0] = P_init
+x_est[0] = x_init
+P_est[0] = P_init
+xestmax[0] = x_init
+Pestmax[0] = P_init
+Pmax = P_init
+#EXTENSIÓN CONVEXA DEL FILTRO DE KALMAN (VADIM)
+x_pred1[0] = x_init
+xpredmax1[0] = x_init
+P_pred1[0] = P_init
+Ppredmax1[0] = P_init
+x_est1[0] = x_init
+P_est1[0] = P_init
+xestmax1[0] = x_init
+Pestmax1[0] = P_init
+Pmax1 = P_init
+#MODELO DEL VAR
+x_real[0]=x_init1
+x_real1[0]=x_init1
+x_real2[0]=x_init1
+
+yt_real[0] = yt_init1
+yt_real1[0] = yt_init1
+yt_real2[0] = yt_init1
+yt_predV[0] = yt_init
+yt_predK[0] = yt_init
+yt_predV1[0] = yt_init
+yt_predK1[0] = yt_init
+
+######################################################################################
+######################################################################################
+#######################################################################################
+
+
+#CASO RUIDO CON OUTLAYERS
+aweibul=0.3
+Ruix = np.random.weibull(aweibul, [nobs,nx]) 
+
+
+#GENERACIÓN DE RUIDO EN LA VARIABLE DE SALIDA
+#CASO EXTRAIDO DEL RUIDO ALFA
+Ruiy = np.array(Ruix[:,0])
+#CASO DE RUIDO ADICIONAL AL RUIDO ALFA
+#mean2 = [0]
+#cov2 = [[0.020]]  # diagonal covariance
+#Ruiy = np.random.multivariate_normal(mean2, cov2, nobs).T
+#Ruiy = np.zeros([nobs,ny])
+#yweibul=0.3
+#Ruialfa = np.random.weibull(yweibul, [nobs,ny]) 
+
+#CREACIÓN DEL VECTOR DE OBSERVACIONES EN LAS VARIABLES
+observationsx = np.array([x1,x2,x3]).T+Ruix
+print(observationsx[0])
+#CREACIÓN DEL VECTOR DE OBSERVACIONES EN LA SALIDA
+observationsyt = np.array([observationsx[:,0]]).T
+
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+
+#ALGORITMO DE FILTRO DE KALMAN
+
+# MAIN CYCLE FOR KALMAN FILTER
+for i in range(nobs):
+# REAL STAGE
+    if i > 0:
+        #x_real1[i] = Tt @ x_real1[i-1]#+Ruix[i-1]
+        x_real1[i] = Tt @ observationsx[i-1]#+Ruix[i-1]
+        yt_real1[i] = Zt @ x_real1[i]#+Ruiy[i]
+        
+        if i > nobs-12:
+            x_real[i] = Tt @ x_pred1[i-1]#+Ruix[i-1]
+            yt_real[i] = Zt @ x_real[i]#+Ruiy[i]
+        else:
+            x_real[i] = Tt @ observationsx[i-1]#+Ruichi[i-1]
+            yt_real[i] = Zt @ x_real[i]#+Ruiy[i]
+        
+        x_pred1[i] = Tt @ x_est1[i-1]
+        P_pred1[i] = Tt @ P_est1[i-1] @ Tt.T + Qt
+        yt_predK1[i]= Zt @ x_pred1[i]
+
+# ESTIMATION STAGE
+    K1[i] = P_pred1[i] @ Zt.T @ inv((Zt @ P_pred1[i] @ Zt.T)+ Ht)
+
+    if i > nobs-12:
+        x_est1[i] = x_pred1[i] + K1[i] @ (yt_real[i] - yt_predK1[i])
+    else:
+        x_est1[i] = x_pred1[i] + K1[i] @ (observationsyt[i] - yt_predK1[i])
+    P_est1[i] = P_pred1[i] - K1[i] @ ((Zt @ P_pred1[i] @ Zt.T) + Ht) @ K1[i].T
+    #P_est1[i] = P_pred1[i] - K1[i]  @ Zt @ P_pred1[i]
+    
+# KALMAN-VADIM GAIN MATRIX  STAGE 
+    EigP1=la.eig(P_est1[i])
+    sumEigP1=np.sum(EigP1[0])
+    if sumEigP1>B1:
+        B1=sumEigP1
+        jmax1 +=1
+        kmax1=i
+        Pmax1=P_est1[i]
+    if i==0:
+        B1=sumEigP1
+        Pmax1=P_init
+
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+
+
+#ALGORITMO DE EXTENSIÓN DE FILTRO DE KALMAN (VADIM)
+#MAIN CYCLE FOR KALMAN FILTER EXTENSION BY VADIM AZHMYAKOV
+for i in range(nobs):
+    # prediction stage
+    if i > 0:
+        if i > nobs-12:
+            x_real2[i] = Tt @ xpredmax1[i-1]#+Ruix[i-1]
+            yt_real2[i] = Zt @ x_real2[i]#+Ruiy[i]
+        else:
+            x_real2[i] = Tt @ observationsx[i-1]#+Ruichi[i-1]
+            yt_real2[i] = Zt @ x_real2[i]#+Ruiy[i]
+        
+        xpredmax1[i] = Tt @ xestmax1[i-1]
+        Ppredmax1[i] = Tt @ Pestmax1[i-1] @ Tt.T + Qt
+        yt_predV1[i]= Zt @ xpredmax1[i]
+      
+    # estimation stage
+    Kmax1[i] = Ppredmax1[i] @ Zt.T @ inv((Zt @ Ppredmax1[i] @ Zt.T) + Ht)
+
+    if i > nobs-12:
+        xestmax1[i] = xpredmax1[i] + Kmax1[i]  @ (yt_real2[i] - yt_predV1[i])
+    else:
+        xestmax1[i] = xpredmax1[i] + Kmax1[i]  @ (observationsyt[i] - yt_predV1[i])
+    Pestmax1[i] = Pmax1
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+#CALCULO DE ERRORES
+
+#CALCULO DEL ERROR MEDIO CUADRÁTICO PARA LAS SERIES: FK CLÁSICO
+diferenciaK1 = np.subtract(observationsyt,yt_predK1)
+squaredK1 = np.square(diferenciaK1)
+mseK1 = squaredK1.mean()
+print(mseK1)
+
+#CALCULO DEL ERROR MEDIO CUADRÁTICO PARA LAS SERIES: FK-VADIM
+diferenciaV1 = np.subtract(observationsyt,yt_predV1)
+squaredV1 = np.square(diferenciaV1)
+mseV1 = squaredV1.mean()
+print(mseV1)
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+
+
+#EXPORTAR ARREGLOS PARA ARCHIVO SCV
+Obs=np.array(observationsyt)
+yreal=np.array(yt_real1)
+ytK=np.array(yt_predK1)
+ytV=np.array(yt_predV1)
+mseV=np.array(squaredV1)
+mseK=np.array(squaredK1)
+Cataluna2=np.concatenate((ytK,mseK,ytV,mseV,yreal,Obs),axis=1)
+dfCataluna2=pd.DataFrame(Cataluna2,columns=['MigracionK-12','MseK','MigracionV-12','MseV','VAR','Obs'])
+dfCataluna2.to_csv('CatalunaVAR-FK12-Outlayer.csv')
+       
+
+
+################################################################################################################
+################################################################################################################
+################################################################################################################
+
+# GRAFICA DE VARIABLES DE SALIDA
+
+
+obsyt=np.append([[0]],observationsyt,axis=0)
+
+plt.figure(figsize=(16,10))
+
+with pd.plotting.plot_params.use("x_compat", True):
+    #plt.scatter(dat, yt_real1[:], color="g", label='Calculated Obs')
+    plt.plot(dat, yt_predK1[:], linestyle="-", color="r", label='FK')
+    plt.plot(dat, yt_predV1[:], linestyle="-", color="k", label='FK-Vadim')
+    plt.plot(dat, yt_real1[:], linestyle="-", color="g", label='VAR')
+    #plt.plot(dat, yt_real[:], linestyle="-", color="b", label='VARKALMAN')
+    #plt.plot(dat, yt_real2[:], linestyle="-", color="m", label='VARVADIM')
+    plt.scatter(dat, obsyt[0:-1], linestyle="-", color="y", label='Original Data')
+
+#plt.ylim([-0.0025,0.0025])
+plt.xlabel('Time')
+plt.ylabel('Tasa Bruta Migración')
+plt.title('Migration Rate prediction for CATALUÑA')
+plt.legend(loc=0)
+
+plt.show()
+
+
+# GRAFICA DE VARIABLES DE SALIDA CON ZOOM
+
+
+plt.figure(figsize=(16,10))
+
+with pd.plotting.plot_params.use("x_compat", True):
+    #plt.scatter(dat, yt_real1[:], color="g", label='Calculated Obs')
+    plt.plot(dat, yt_predK1[:], linestyle="-", color="r", label='FK')
+    plt.plot(dat, yt_predV1[:], linestyle="-", color="k", label='FK-Vadim')
+    plt.plot(dat, yt_real1[:], linestyle="-", color="g", label='VAR')
+    #plt.plot(dat, yt_real[:], linestyle="-", color="b", label='VARKALMAN')
+    #plt.plot(dat, yt_real2[:], linestyle="-", color="m", label='VARVADIM')
+    plt.scatter(dat, obsyt[0:-1], linestyle="-", color="y", label='Original Data')
+
+plt.ylim([-2,10])
+plt.xlabel('Time')
+plt.ylabel('Tasa Bruta Migración')
+plt.title('Migration Rate prediction for CATALUÑA (ZOOM)')
+plt.legend(loc=0)
+
+plt.show()
+
+# GRÁFICA DE ERRORES MEDIOS CUADRÁTICOS DE CADA ALGORITMO
+
+plt.figure(figsize=(16,10))
+
+with pd.plotting.plot_params.use("x_compat", True):
+    plt.plot(dat, squaredK1[:], linestyle="-", color="r", label='FK')
+    plt.plot(dat, squaredV1[:], linestyle="-", color="k", label='FK-V')
+
+plt.xlabel('Time')
+plt.ylabel('MSE with classic KF')
+plt.title('Mean Square Error for Migration Rate Prediction for CATALUÑA')
+plt.legend(loc=0)
+
+plt.show()
